@@ -10,17 +10,20 @@ import (
 )
 
 func main() {
+	// Инициализируем потокобезопасное хранилище в памяти
 	store := storage.NewMemoryStorage()
+
+	// Создаем структуру обработчиков
 	h := handlers.New(store)
 
-	mux := http.NewServeMux()
+	// Получаем настроенный роутер с JSON-обработкой ошибок 404/405
+	apiRouter := h.SetupRoutes()
 
-	mux.HandleFunc("/tasks", customHttp.Logger(h.TasksCollection))
-	mux.HandleFunc("/tasks/", customHttp.Logger(h.TaskItem))
-	mux.HandleFunc("/health", customHttp.Logger(h.HealthCheck))
+	// Оборачиваем весь роутер целиком в Middleware для глобального логирования всех запросов
+	loggingRouter := customHttp.Logger(apiRouter.ServeHTTP)
 
 	log.Println("Server listening on :8080")
-	if err := http.ListenAndServe(":8080", mux); err != nil {
+	if err := http.ListenAndServe(":8080", loggingRouter); err != nil {
 		log.Fatal(err)
 	}
 }

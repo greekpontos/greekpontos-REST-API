@@ -2,16 +2,24 @@ package storage
 
 import (
 	"errors"
+	"sort"
+	"strings"
 	"sync"
 	"tasks-api/internal/models"
 	"time"
 )
 
+// Кастомные типизированные ошибки для точного сопоставления со статусами HTTP
+var (
+	ErrTaskNotFound = errors.New("task not found")
+	ErrInvalidTitle = errors.New("title cannot be empty or contain only whitespaces")
+)
+
 type Storage interface {
-	List() []models.Task
-	Create(task models.Task) (models.Task, error)
-	Get(id int) (models.Task, bool)
-	Update(id int, task models.Task) (models.Task, error)
+	List() ([]models.Task, error)
+	Create(title string, done bool) (models.Task, error)
+	Get(id int) (models.Task, error)
+	Update(id int, title string, done bool) (models.Task, error)
 	Delete(id int) error
 }
 
@@ -28,7 +36,7 @@ func NewMemoryStorage() *MemoryStorage {
 	}
 }
 
-func (s *MemoryStorage) List() []models.Task {
+func (s *MemoryStorage) List() ([]models.Task, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -36,49 +44,71 @@ func (s *MemoryStorage) List() []models.Task {
 	for _, task := range s.tasks {
 		list = append(list, task)
 	}
-	return list
+
+	// Замечание преподавателя: Гарантируем стабильный и предсказуемый порядок (сортировка по ID)
+	sort.Slice(list, func(i, j int) bool {
+		return list[i].ID < list[j].ID
+	})
+
+	return list, nil
 }
 
-func (s *MemoryStorage) Create(t models.Task) (models.Task, error) {
+func (s *MemoryStorage) Create(title string, done bool) (models.Task, error) {
+	// Замечание преподавателя: Валидация с учетом пробельных символов через TrimSpace
+	trimmedTitle := strings.TrimSpace(title)
+	if trimmedTitle == "" {
+		return models.Task{}, ErrInvalidTitle
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if t.Title == "" {
-		return models.Task{}, errors.New("title is required")
+	// Замечание преподавателя: Сервер сам полностью контролирует время создания, игнорируя ввод клиента
+	task := models.Task{
+		ID:        s.nextID,
+		Title:     trimmedTitle,
+		Done:      done,
+		CreatedAt: time.Now().UTC().Format(time.RFC3339),
 	}
 
-	t.ID = s.nextID
-	if t.CreatedAt == "" {
-		t.CreatedAt = time.Now().Format(time.RFC3339)
-	}
-	s.tasks[t.ID] = t
+	s.tasks[task.ID] = task
 	s.nextID++
 
-	return t, nil
+	return task, nil
 }
 
-func (s *MemoryStorage) Get(id int) (models.Task, bool) {
+func (s *MemoryStorage) Get(id int) (models.Task, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	task, exists := s.tasks[id]
-	return task, exists
+	if !exists {
+		return models.Task{}, ErrTaskNotFound
+	}
+	return task, nil
 }
 
-func (s *MemoryStorage) Update(id int, t models.Task) (models.Task, error) {
+func (s *MemoryStorage) Update(id int, title string, done bool) (models.Task, error) {
+	trimmedTitle := strings.TrimSpace(title)
+	if trimmedTitle == "" {
+		return models.Task{}, ErrInvalidTitle
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if _, exists := s.tasks[id]; !exists {
-		return models.Task{}, errors.New("task not found")
-	}
-	if t.Title == "" {
-		return models.Task{}, errors.New("title is required")
+	existingTask, exists := s.tasks[id]
+	if !exists {
+		return models.Task{}, ErrTaskNotFound
 	}
 
-	t.ID = id
-	s.tasks[id] = t
-	return t, nil
+	// КРИТИЧЕСКОЕ ЗАМЕЧАНИЕ: Сохраняем исходную дату создания (existingTask.CreatedAt)
+	// Обновляем только те поля, которые разрешено менять клиенту
+	existingTask.Title = trimmedTitle
+	existingTask.Done = done
+
+	s.tasks[id] = existingTask
+	return existingTask, nil
 }
 
 func (s *MemoryStorage) Delete(id int) error {
@@ -86,7 +116,7 @@ func (s *MemoryStorage) Delete(id int) error {
 	defer s.mu.Unlock()
 
 	if _, exists := s.tasks[id]; !exists {
-		return errors.New("task not found")
+		return ErrTaskNotFound
 	}
 
 	delete(s.tasks, id)
